@@ -1,0 +1,51 @@
+{
+  "model_path": "pose_landmarker.task",
+  "refs_file": "pose_references.json",
+
+  "webcam": {
+    "index": 0,
+    "width": 1280,
+    "height": 720
+  },
+
+  "feedback": {
+    "score_thresholds": { "green": 75, "orange": 50 },
+    "hold_duration_s": 5.0,
+    "min_hold_score": 70,
+    "landmark_visibility_min": 0.5
+  },
+
+  "session": {
+    "log_dir": "sessions",
+    "enabled": true
+  },
+
+  "poses": {
+    "Warrior I": {
+      "angle_keys": [
+        "Left Knee", "Right Knee",
+        "Left Hip",
+        "Left Elbow", "Right Elbow",
+        "Left Shoulder", "Right Shoulder"
+      ],
+      "tip": "Front knee at 90 deg — both arms raised straight up"
+    },
+    "Tree Pose": {
+      "angle_keys": [
+        "Right Knee", "Right Hip",
+        "Left Elbow", "Right Elbow",
+        "Left Shoulder", "Right Shoulder"
+      ],
+      "tip": "Standing leg straight — hands in prayer at chest"
+    },
+    "Triangle": {
+      "angle_keys": [
+        "Left Knee", "Right Knee",
+        "Left Hip",
+        "Left Shoulder", "Right Shoulder",
+        "Left Elbow", "Right Elbow"
+      ],
+      "tip": "Legs wide and straight — arms vertical, torso tilted"
+    }
+  }
+}

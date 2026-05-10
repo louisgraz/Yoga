@@ -1,46 +1,29 @@
 """
-build_references.py — Compute pose reference angles from a yoga dataset.
-=========================================================================
-Output: pose_references.json   (loaded automatically by yoga_demo.py)
+build_references.py — FIXED VERSION
+=====================================
+Key fixes vs previous version:
+  1. normalise_name: regex word-boundary matching (longest key first).
+     Prevents "warrior_ii" matching inside "warrior_iii_pose_...",
+     and "t_pose" matching inside "mountain_pose_or_tadasana_".
+  2. Statistics: median + IQR instead of mean + std.
+     IQR = range containing the middle 50% of real practitioners.
+     Outliers beyond Q1-2*IQR / Q3+2*IQR are removed first.
+  3. Angles: prefer 3-D world landmarks (metre-scale, camera-independent).
+  4. Visibility filter: skip triplets where any landmark visibility < threshold.
 
 USAGE
 ─────
-  Yoga-82 (your case — downloads images from URLs in .txt files):
-    python build_references.py --yoga82 Yoga-82/
-    python build_references.py --yoga82 Yoga-82/ --max-per-pose 150
-
-  Image folders (any dataset with pose sub-folders containing images):
-    python build_references.py --images path/to/dataset/
-
-  CSV with pre-computed MediaPipe keypoints (Kaggle datasets):
-    python build_references.py --csv train.csv [test.csv ...]
-
-REQUIREMENTS
-────────────
-  pip install mediapipe opencv-python numpy requests
-  pip install pandas        # only needed for --csv mode
-
-HOW --yoga82 WORKS
-──────────────────
-  Yoga-82 ships .txt files (one per pose) listing image paths + download URLs.
-  This script finds the relevant .txt files, downloads up to --max-per-pose
-  images per pose (cached locally so re-runs are instant), runs MediaPipe on
-  each, and computes mean ± std angle statistics.
-
-  Expected Yoga-82 directory structure:
-    Yoga-82/
-      Warrior_I_Pose_or_Virabhadrasana_I_.txt
-      Tree_Pose_or_Vriksasana_.txt
-      Triangle_Pose_or_Trikonasana_.txt
-      yoga_train.txt
-      yoga_test.txt
-      yoga_dataset_links/   (optional sub-folder — also searched)
+  Yoga-82:  python build_references.py --yoga82 Yoga-82/
+  Images:   python build_references.py --images path/to/dataset/
+  CSV:      python build_references.py --csv train.csv [test.csv ...]
+=====================================
 """
 
 import argparse
 import glob
 import json
 import os
+import re
 import sys
 import time
 
@@ -65,50 +48,66 @@ ANGLE_INDICES = {
     "Right Shoulder": [ 8, 12, 14],
 }
 
-MIN_TOLERANCE = 5.0
-MIN_SAMPLES   = 8
+MIN_TOLERANCE  = 5.0
+MIN_SAMPLES    = 8
+MIN_VISIBILITY = 0.5
 
 
 # ─────────────────────────────────────────────────────────────────────
 #  POSE NAME NORMALISATION
 # ─────────────────────────────────────────────────────────────────────
 POSE_NAME_MAP = {
-    # Warrior I
-    "warrior_i":              "Warrior I",
-    "warrior1":               "Warrior I",
-    "warrior_one":            "Warrior I",
-    "virabhadrasana_i":       "Warrior I",
-    "virabhadrasana1":        "Warrior I",
-    "warrior_i_pose":         "Warrior I",
-    "warrior_i_pose_or_virabhadrasana_i_": "Warrior I",
-    # Warrior II  (used as proxy if Warrior I not found)
-    "warrior_ii":             "Warrior I",
-    "warrior2":               "Warrior I",
-    "warrior_ii_pose_or_virabhadrasana_ii_": "Warrior I",
-    # Tree
-    "tree":                   "Tree Pose",
-    "tree_pose":              "Tree Pose",
-    "vrksasana":              "Tree Pose",
-    "tree_pose_or_vriksasana_": "Tree Pose",
+    # Warrior I — explicit full Yoga-82 names first (longest keys win)
+    "warrior_i_pose_or_virabhadrasana_i":      "Warrior I",
+    "warrior_i_pose":                          "Warrior I",
+    "warrior_i":                               "Warrior I",
+    "warrior1":                                "Warrior I",
+    "virabhadrasana_i":                        "Warrior I",
+    # Warrior II — proxy (leg/hip angles are close to Warrior I)
+    "warrior_ii_pose_or_virabhadrasana_ii":    "Warrior I",
+    "warrior_ii_pose":                         "Warrior I",
+    "warrior_ii":                              "Warrior I",
+    "warrior2":                                "Warrior I",
+    "virabhadrasana_ii":                       "Warrior I",
+    # Tree Pose
+    "tree_pose_or_vrksasana":                  "Tree Pose",
+    "tree_pose_or_vriksasana":                 "Tree Pose",
+    "tree_pose":                               "Tree Pose",
+    "vrksasana":                               "Tree Pose",
+    "vriksasana":                              "Tree Pose",
+    "tree":                                    "Tree Pose",
     # Triangle
-    "triangle":               "Triangle",
-    "triangle_pose":          "Triangle",
-    "trikonasana":            "Triangle",
-    "extended_triangle":      "Triangle",
-    "utthita_trikonasana":    "Triangle",
-    "triangle_pose_or_trikonasana_": "Triangle",
-    # T-Pose
-    "t_pose":                 "T-Pose (calib)",
-    "tpose":                  "T-Pose (calib)",
+    "extended_revolved_triangle_pose_or_utthita_trikonasana": "Triangle",
+    "triangle_pose_or_trikonasana":            "Triangle",
+    "triangle_pose":                           "Triangle",
+    "trikonasana":                             "Triangle",
+    "utthita_trikonasana":                     "Triangle",
+    "triangle":                                "Triangle",
 }
 
+# Sorted longest-first: longer keys are tried before shorter ones.
+# This prevents "warrior_ii" matching inside "warrior_iii_pose_…".
+_SORTED_MAP = sorted(POSE_NAME_MAP.items(), key=lambda x: -len(x[0]))
+
+
 def normalise_name(raw: str):
-    key = raw.lower().strip().replace("-", "_").replace(" ", "_")
+    """
+    Map a raw folder/label name to a canonical pose name.
+    Uses regex word-boundary matching (longest key first) to avoid
+    partial matches like warrior_ii inside warrior_iii.
+    """
+    key = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+
+    # 1. Exact match
     if key in POSE_NAME_MAP:
         return POSE_NAME_MAP[key]
-    for k, v in POSE_NAME_MAP.items():
-        if k in key or key in k:
+
+    # 2. Word-boundary substring, longest key first
+    for k, v in _SORTED_MAP:
+        pattern = r"(?:^|_)" + re.escape(k) + r"(?:_|$)"
+        if re.search(pattern, key):
             return v
+
     return None
 
 
@@ -116,6 +115,7 @@ def normalise_name(raw: str):
 #  MATHS
 # ─────────────────────────────────────────────────────────────────────
 def angle_between(a, b, c):
+    """Angle in degrees at vertex b. Accepts 2-D or 3-D coordinates."""
     a, b, c = (np.array(x, dtype=float) for x in (a, b, c))
     ba, bc  = a - b, c - b
     denom   = np.linalg.norm(ba) * np.linalg.norm(bc)
@@ -123,14 +123,57 @@ def angle_between(a, b, c):
         return None
     return float(np.degrees(np.arccos(np.clip(np.dot(ba, bc) / denom, -1.0, 1.0))))
 
-def angles_from_lm_list(lm_list):
-    out = {}
+
+def robust_stats(values: list):
+    """
+    Compute (median, iqr_tolerance, n_clean) with outlier removal.
+
+    Why IQR instead of std:
+      - IQR covers the middle 50% of real practitioners — physically meaningful.
+      - std is inflated by the ~10% of images where MediaPipe picks a wrong pose
+        or the camera angle is unusual.
+      - Example: std=48° → IQR≈15° after outlier removal — 3x more informative.
+
+    Outlier removal: discard values outside [Q1-2*IQR, Q3+2*IQR].
+    Tolerance floor: MIN_TOLERANCE (5°) to avoid over-strict feedback.
+    """
+    arr    = np.array(values, dtype=float)
+    q1, q3 = np.percentile(arr, [25, 75])
+    iqr    = q3 - q1
+    lo, hi = q1 - 2.0 * iqr, q3 + 2.0 * iqr
+    clean  = arr[(arr >= lo) & (arr <= hi)]
+    if len(clean) < MIN_SAMPLES:
+        clean = arr
+
+    median    = float(np.median(clean))
+    q1c, q3c  = np.percentile(clean, [25, 75])
+    tolerance = max(MIN_TOLERANCE, float(q3c - q1c))
+    return median, tolerance, int(len(clean))
+
+
+def angles_from_landmarks(lm_2d, lm_world=None):
+    """
+    Compute all defined angles from landmark lists.
+    - Visibility check via lm_2d (has .visibility).
+    - Angle computation via lm_world (3-D, metre-scale) when available.
+      3-D angles are camera-distance-independent and more accurate for
+      poses involving depth (Triangle, Warrior I lean, etc.).
+    - Falls back to lm_2d (2-D normalised) if world landmarks not available.
+    """
+    out    = {}
+    use_3d = lm_world is not None and len(lm_world) >= 33
+
     for name, (p1, p2, p3) in ANGLE_INDICES.items():
         try:
-            a = [lm_list[p1].x, lm_list[p1].y]
-            b = [lm_list[p2].x, lm_list[p2].y]
-            c = [lm_list[p3].x, lm_list[p3].y]
-            ang = angle_between(a, b, c)
+            vis = [getattr(lm_2d[i], "visibility", 1.0) for i in (p1, p2, p3)]
+            if any(v < MIN_VISIBILITY for v in vis):
+                continue
+            if use_3d:
+                pts = [[lm_world[i].x, lm_world[i].y, lm_world[i].z]
+                       for i in (p1, p2, p3)]
+            else:
+                pts = [[lm_2d[i].x, lm_2d[i].y] for i in (p1, p2, p3)]
+            ang = angle_between(*pts)
             if ang is not None:
                 out[name] = ang
         except (IndexError, AttributeError):
@@ -151,17 +194,18 @@ def init_image_landmarker():
     )
     return mp_vision.PoseLandmarker.create_from_options(opts)
 
-def run_mediapipe(landmarker, img_bgr):
-    """Run pose detection on a BGR image, return angles dict or None."""
+def detect_image(landmarker, img_bgr):
+    """Run detection on a BGR frame. Returns (lm_2d, lm_world) or (None, None)."""
     try:
         rgb    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         res    = landmarker.detect(mp_img)
         if res.pose_landmarks:
-            return angles_from_lm_list(res.pose_landmarks[0])
+            world = res.pose_world_landmarks[0] if res.pose_world_landmarks else None
+            return res.pose_landmarks[0], world
     except Exception:
         pass
-    return None
+    return None, None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -296,12 +340,14 @@ def process_yoga82(yoga82_dir: str, max_per_pose: int = 100) -> dict:
                 n_failed += 1
                 continue
 
-            # 3) Run MediaPipe
-            angles = run_mediapipe(landmarker, img_bgr)
-            if angles:
-                for k, v in angles.items():
-                    collected[k].append(v)
-                n_detected += 1
+            lm_2d, lm_world = detect_image(landmarker, img_bgr)
+            if lm_2d is None:
+                continue
+
+            angles = angles_from_landmarks(lm_2d, lm_world)
+            for k, v in angles.items():
+                collected[k].append(v)
+            n_detected += 1
             
             # Progress every 10 images
             if n_tried % 10 == 0:
@@ -363,12 +409,15 @@ def process_image_folder(root_dir: str) -> dict:
 
         for fname in images:
             try:
-                bgr    = cv2.imread(os.path.join(folder_path, fname))
-                angles = run_mediapipe(landmarker, bgr) if bgr is not None else None
-                if angles:
-                    for k, v in angles.items():
-                        collected[k].append(v)
-                    n_detected += 1
+                bgr = cv2.imread(os.path.join(folder_path, fname))
+                if bgr is None:
+                    continue
+                lm_2d, lm_world = detect_image(landmarker, bgr)
+                if lm_2d is None:
+                    continue
+                for k, v in angles_from_landmarks(lm_2d, lm_world).items():
+                    collected[k].append(v)
+                n_detected += 1
             except Exception:
                 pass
 
@@ -485,32 +534,31 @@ def build_json(pose_data: dict, out_path: str):
         for angle_name, values in angle_dict.items():
             if len(values) < MIN_SAMPLES:
                 continue
-            mean = float(np.mean(values))
-            std  = max(MIN_TOLERANCE, float(np.std(values)))
+            median, tolerance, n_clean = robust_stats(values)
             entries[angle_name] = {
-                "target":    round(mean, 1),
-                "tolerance": round(std,  1),
-                "n_samples": len(values),
+                "target":    round(median,    1),
+                "tolerance": round(tolerance, 1),
+                "n_samples": n_clean,
+                "n_raw":     len(values),
             }
         if entries:
             references[pose_name] = entries
-            sample_n = list(entries.values())[0]["n_samples"]
+            avg_tol = np.mean([e["tolerance"] for e in entries.values()])
+            n       = list(entries.values())[0]["n_samples"]
             print(f"  ✓  {pose_name:<24} {len(entries)} angles  "
-                  f"(~{sample_n} samples each)")
+                  f"~{n} samples  avg_tolerance={avg_tol:.1f}°")
 
     if not references:
         print("\n[ERROR] No valid poses extracted.")
-        print("  Common causes:")
         print("  • --yoga82: too many dead URLs → try --max-per-pose 200")
-        print("  • --images: folder names not matching pose map")
-        print("  • --csv: label names not matching pose map")
+        print("  • --images/--csv: check folder/label names match POSE_NAME_MAP")
         sys.exit(1)
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(references, f, indent=2)
 
-    print(f"\n✓  Saved  →  {out_path}")
-    print(f"   Poses  :  {list(references.keys())}")
+    print(f"\n✓  Saved → {out_path}")
+    print(f"   Poses : {list(references.keys())}")
 
 
 # ─────────────────────────────────────────────────────────────────────
