@@ -1,0 +1,170 @@
+{
+  "T-Pose (calib)": {
+    "Left Knee": {
+      "target": 140.6,
+      "tolerance": 48.7,
+      "n_samples": 521
+    },
+    "Right Knee": {
+      "target": 139.5,
+      "tolerance": 49.8,
+      "n_samples": 521
+    },
+    "Left Hip": {
+      "target": 106.7,
+      "tolerance": 47.8,
+      "n_samples": 521
+    },
+    "Right Hip": {
+      "target": 106.6,
+      "tolerance": 50.6,
+      "n_samples": 521
+    },
+    "Left Elbow": {
+      "target": 147.0,
+      "tolerance": 38.1,
+      "n_samples": 521
+    },
+    "Right Elbow": {
+      "target": 145.3,
+      "tolerance": 40.4,
+      "n_samples": 521
+    },
+    "Left Shoulder": {
+      "target": 108.1,
+      "tolerance": 54.1,
+      "n_samples": 521
+    },
+    "Right Shoulder": {
+      "target": 107.7,
+      "tolerance": 53.5,
+      "n_samples": 521
+    }
+  },
+  "Tree Pose": {
+    "Left Knee": {
+      "target": 131.3,
+      "tolerance": 62.5,
+      "n_samples": 200
+    },
+    "Right Knee": {
+      "target": 129.1,
+      "tolerance": 62.2,
+      "n_samples": 200
+    },
+    "Left Hip": {
+      "target": 147.9,
+      "tolerance": 31.2,
+      "n_samples": 200
+    },
+    "Right Hip": {
+      "target": 146.4,
+      "tolerance": 33.1,
+      "n_samples": 200
+    },
+    "Left Elbow": {
+      "target": 132.1,
+      "tolerance": 50.4,
+      "n_samples": 200
+    },
+    "Right Elbow": {
+      "target": 131.0,
+      "tolerance": 51.8,
+      "n_samples": 200
+    },
+    "Left Shoulder": {
+      "target": 80.4,
+      "tolerance": 55.5,
+      "n_samples": 200
+    },
+    "Right Shoulder": {
+      "target": 76.6,
+      "tolerance": 55.1,
+      "n_samples": 200
+    }
+  },
+  "Triangle": {
+    "Left Knee": {
+      "target": 172.1,
+      "tolerance": 5.6,
+      "n_samples": 100
+    },
+    "Right Knee": {
+      "target": 171.4,
+      "tolerance": 8.2,
+      "n_samples": 100
+    },
+    "Left Hip": {
+      "target": 116.1,
+      "tolerance": 43.3,
+      "n_samples": 100
+    },
+    "Right Hip": {
+      "target": 88.6,
+      "tolerance": 48.0,
+      "n_samples": 100
+    },
+    "Left Elbow": {
+      "target": 166.1,
+      "tolerance": 24.7,
+      "n_samples": 100
+    },
+    "Right Elbow": {
+      "target": 165.7,
+      "tolerance": 12.7,
+      "n_samples": 100
+    },
+    "Left Shoulder": {
+      "target": 121.7,
+      "tolerance": 25.5,
+      "n_samples": 100
+    },
+    "Right Shoulder": {
+      "target": 125.7,
+      "tolerance": 21.3,
+      "n_samples": 100
+    }
+  },
+  "Warrior I": {
+    "Left Knee": {
+      "target": 152.6,
+      "tolerance": 29.6,
+      "n_samples": 300
+    },
+    "Right Knee": {
+      "target": 149.8,
+      "tolerance": 30.4,
+      "n_samples": 300
+    },
+    "Left Hip": {
+      "target": 128.1,
+      "tolerance": 27.9,
+      "n_samples": 300
+    },
+    "Right Hip": {
+      "target": 125.7,
+      "tolerance": 27.1,
+      "n_samples": 300
+    },
+    "Left Elbow": {
+      "target": 163.9,
+      "tolerance": 20.7,
+      "n_samples": 300
+    },
+    "Right Elbow": {
+      "target": 164.0,
+      "tolerance": 19.0,
+      "n_samples": 300
+    },
+    "Left Shoulder": {
+      "target": 60.1,
+      "tolerance": 53.9,
+      "n_samples": 300
+    },
+    "Right Shoulder": {
+      "target": 60.2,
+      "tolerance": 53.3,
+      "n_samples": 300
+    }
+  }
+}
