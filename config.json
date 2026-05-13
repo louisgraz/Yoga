@@ -1,6 +1,7 @@
 {
   "model_path": "pose_landmarker.task",
   "refs_file": "pose_references.json",
+  "yoga82_dir": "Yoga-82",
 
   "webcam": {
     "index": 0,
@@ -12,7 +13,8 @@
     "score_thresholds": { "green": 75, "orange": 50 },
     "hold_duration_s": 5.0,
     "min_hold_score": 70,
-    "landmark_visibility_min": 0.5
+    "landmark_visibility_min": 0.5,
+    "max_tolerance_deg": 25.0
   },
 
   "session": {
@@ -22,12 +24,14 @@
 
   "poses": {
     "Warrior I": {
+      "reference_image": "Yoga-82/Warrior_I_Pose_or_Virabhadrasana_I_/1_0_68.jpg",
       "angle_keys": [
         "Left Knee", "Right Knee",
         "Left Hip",
         "Left Elbow", "Right Elbow",
         "Left Shoulder", "Right Shoulder"
       ],
+      "min_joints": 5,
       "tip": "Front knee at 90 deg — both arms raised straight up"
     },
     "Tree Pose": {
@@ -36,6 +40,7 @@
         "Left Elbow", "Right Elbow",
         "Left Shoulder", "Right Shoulder"
       ],
+      "min_joints": 4,
       "tip": "Standing leg straight — hands in prayer at chest"
     },
     "Triangle": {
@@ -45,6 +50,7 @@
         "Left Shoulder", "Right Shoulder",
         "Left Elbow", "Right Elbow"
       ],
+      "min_joints": 5,
       "tip": "Legs wide and straight — arms vertical, torso tilted"
     }
   }

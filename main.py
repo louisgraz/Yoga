@@ -21,7 +21,6 @@ Controls
 """
 
 import json
-import math
 import os
 import sys
 import time
@@ -80,47 +79,123 @@ def init_landmarker(model_path: str):
 
 
 # ─────────────────────────────────────────────────────────────────
-#  POSE THUMBNAIL REFERENCE POSITIONS
-#  Normalised (0–100) landmark positions for each pose.
-#  These are visual constants — they represent ideal body geometry
-#  and are appropriate in code, not config.
+#  REFERENCE PHOTO SYSTEM
+#  Loads one representative image per pose from the Yoga-82 cache.
+#  Falls back gracefully (no crash, no photo shown) if images aren't found.
 # ─────────────────────────────────────────────────────────────────
-POSE_THUMBNAILS = {
-    "Warrior I": {
-        0:  (50,  6),
-        11: (42, 26),  12: (58, 26),
-        13: (36, 10),  14: (64, 10),
-        15: (32,  0),  16: (68,  0),
-        23: (44, 57),  24: (56, 54),
-        25: (30, 82),  26: (73, 72),
-        27: (24, 108), 28: (83, 97),
-    },
-    "Tree Pose": {
-        0:  (50,  6),
-        11: (38, 26),  12: (62, 26),
-        13: (44, 42),  14: (56, 42),
-        15: (50, 52),  16: (50, 52),
-        23: (46, 63),  24: (54, 63),
-        25: (34, 80),  26: (54, 88),
-        27: (38, 88),  28: (54, 113),
-    },
-    "Triangle": {
-        0:  (44, 10),
-        11: (28, 30),  12: (66, 42),
-        13: (16, 24),  14: (76, 60),
-        15: ( 8, 18),  16: (82, 73),
-        23: (36, 63),  24: (60, 63),
-        25: (26, 88),  26: (68, 88),
-        27: (16, 113), 28: (78, 113),
-    },
+
+# Maps canonical pose names to Yoga-82 folder name patterns (lowercase)
+_POSE_FOLDER_PATTERNS = {
+    "Warrior I": ["warrior_i_pose", "virabhadrasana_i"],
+    "Tree Pose": ["tree_pose", "vrksasana", "vriksasana"],
+    "Triangle":  ["triangle_pose", "trikonasana", "utthita_trikonasana"],
 }
 
-STICK_CONNECTIONS = [
-    ( 0, 11), ( 0, 12), (11, 12),
-    (11, 13), (13, 15), (12, 14), (14, 16),
-    (11, 23), (12, 24), (23, 24),
-    (23, 25), (25, 27), (24, 26), (26, 28),
-]
+_IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def _find_pose_folder(yoga82_dir: str, pose_name: str) -> str | None:
+    """
+    Return the path of the best-matching Yoga-82 subfolder for a pose.
+    Uses regex word-boundary matching (same logic as normalise_name in
+    build_references.py) so "virabhadrasana_i" does not match
+    "virabhadrasana_iii_", and "warrior_i_pose" does not match
+    "warrior_iii_pose_...".
+    """
+    import re
+    patterns = _POSE_FOLDER_PATTERNS.get(pose_name, [])
+    if not patterns or not os.path.isdir(yoga82_dir):
+        return None
+
+    # Sort patterns longest-first so more specific patterns win
+    patterns_sorted = sorted(patterns, key=len, reverse=True)
+
+    try:
+        for folder in sorted(os.listdir(yoga82_dir)):
+            key = re.sub(r"[^a-z0-9]+", "_", folder.lower()).strip("_")
+            for p in patterns_sorted:
+                pattern = r"(?:^|_)" + re.escape(p) + r"(?:_|$)"
+                if re.search(pattern, key):
+                    full = os.path.join(yoga82_dir, folder)
+                    if os.path.isdir(full):
+                        return full
+    except OSError:
+        pass
+    return None
+
+
+def load_reference_photos(config: dict) -> dict:
+    """
+    For each pose try to load a reference photo.
+    Priority:
+      1. config["poses"][pose]["reference_image"] (explicit path override)
+      2. First valid cached image in the matching Yoga-82 sub-folder
+
+    Returns { pose_name: bgr_ndarray | None }
+    """
+    yoga82_dir = config.get("yoga82_dir", "Yoga-82")
+    photos     = {}
+
+    for pose_name, pose_cfg in config["poses"].items():
+        img = None
+
+        # 1. Explicit override in config
+        explicit = pose_cfg.get("reference_image")
+        if explicit and os.path.isfile(explicit):
+            img = cv2.imread(explicit)
+
+        # 2. Auto-discover from Yoga-82 cache
+        if img is None:
+            folder = _find_pose_folder(yoga82_dir, pose_name)
+            if folder:
+                for fname in sorted(os.listdir(folder)):
+                    if os.path.splitext(fname)[1].lower() in _IMG_EXTS:
+                        candidate = cv2.imread(os.path.join(folder, fname))
+                        if candidate is not None:
+                            img = candidate
+                            break
+
+        photos[pose_name] = img
+        status = "✓" if img is not None else "✗ (not found)"
+        print(f"  Reference photo [{pose_name}]: {status}")
+
+    return photos
+
+
+def draw_pose_reference(frame, photo, bx: int, by: int,
+                        bw: int = 130, bh: int = 165):
+    """
+    Display a reference photo in the right panel.
+    Scales the image to fill the box while preserving aspect ratio.
+    If photo is None, shows a placeholder message.
+    """
+    draw_rounded_rect(frame, bx, by, bx + bw, by + bh, 8, (28, 28, 28), 0.80)
+    cv2.putText(frame, "Reference", (bx + 8, by + 14),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.34, (150, 150, 150), 1)
+
+    if photo is None:
+        cv2.putText(frame, "no image", (bx + 22, by + bh // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (90, 90, 90), 1)
+        return
+
+    # Available draw area inside the box
+    area_x, area_y = bx + 2,  by + 20
+    area_w, area_h = bw - 4,  bh - 22
+
+    h_img, w_img = photo.shape[:2]
+    scale   = min(area_w / w_img, area_h / h_img)
+    new_w   = int(w_img * scale)
+    new_h   = int(h_img * scale)
+    resized = cv2.resize(photo, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Centre inside area
+    ox = area_x + (area_w - new_w) // 2
+    oy = area_y + (area_h - new_h) // 2
+
+    # Guard against going out of frame bounds
+    oy = max(0, min(oy, frame.shape[0] - new_h))
+    ox = max(0, min(ox, frame.shape[1] - new_w))
+    frame[oy:oy + new_h, ox:ox + new_w] = resized
 
 SKELETON_CONNECTIONS = [
     (11, 13), (13, 15), (12, 14), (14, 16),
@@ -167,29 +242,6 @@ def draw_skeleton(frame, lm_2d, joint_colors: dict):
         cv2.circle(frame, (x, y), 5, (255, 255, 255), 1)
 
 
-def draw_pose_thumbnail(frame, pose_name: str, bx: int, by: int,
-                        bw: int = 130, bh: int = 165):
-    pts = POSE_THUMBNAILS.get(pose_name)
-    if pts is None:
-        return
-    draw_rounded_rect(frame, bx, by, bx + bw, by + bh, 8, (28, 28, 28), 0.80)
-    cv2.putText(frame, "Target", (bx + 8, by + 14),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.34, (150, 150, 150), 1)
-
-    mg = 10
-    dw = bw - mg * 2
-    dh = bh - mg - 20
-
-    def to_px(nx, ny):
-        return (bx + mg + int(nx / 100 * dw), by + 20 + int(ny / 100 * dh))
-
-    for ai, bi in STICK_CONNECTIONS:
-        if ai in pts and bi in pts:
-            cv2.line(frame, to_px(*pts[ai]), to_px(*pts[bi]), (110, 140, 220), 1)
-    for idx, (nx, ny) in pts.items():
-        cv2.circle(frame, to_px(nx, ny), 4 if idx == 0 else 3, (195, 205, 255), -1)
-
-
 def draw_hold_arc(frame, cx: int, cy: int, radius: int,
                   progress: float, color: tuple, just_completed: bool):
     """
@@ -213,7 +265,8 @@ def draw_hold_arc(frame, cx: int, cy: int, radius: int,
 
 def draw_right_panel(frame, fb: FeedbackResult,
                      session: Session, config: dict,
-                     pose_keys: list, current_idx: int):
+                     pose_keys: list, current_idx: int,
+                     ref_photos: dict):
     h, w   = frame.shape[:2]
     px     = w - 310
     tholds = config["feedback"]["score_thresholds"]
@@ -224,7 +277,21 @@ def draw_right_panel(frame, fb: FeedbackResult,
     cv2.putText(frame, fb.pose_name,
                 (px, 36), cv2.FONT_HERSHEY_DUPLEX, 0.60, (255, 255, 255), 1)
 
-    # Score
+    # ── Coverage warning takes priority over score ────────────────
+    if fb.insufficient_coverage:
+        warn = "Step back — full body needed"
+        cv2.putText(frame, warn,
+                    (px, 63), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 60, 240), 1)
+        cv2.putText(frame, f"({fb.n_visible} joints visible)",
+                    (px, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.37, (130, 130, 130), 1)
+        # Still show reference photo so user knows what to aim for
+        draw_pose_reference(frame, ref_photos.get(fb.pose_name), bx=px, by=93)
+        hint = config["poses"].get(fb.pose_name, {}).get("tip", "")
+        cv2.putText(frame, hint, (10, h - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 120), 1)
+        return
+
+    # ── Normal score display ──────────────────────────────────────
     sc = fb.score
     sc_col = ((50, 220, 80)  if sc >= tholds["green"]  else
               (30, 180, 255) if sc >= tholds["orange"] else
@@ -236,8 +303,8 @@ def draw_right_panel(frame, fb: FeedbackResult,
     cv2.rectangle(frame, (px, 73),  (px + bw, 85),               (50, 50, 50), -1)
     cv2.rectangle(frame, (px, 73),  (px + int(bw * sc / 100), 85), sc_col, -1)
 
-    # Thumbnail
-    draw_pose_thumbnail(frame, fb.pose_name, bx=px, by=93)
+    # Thumbnail / reference photo
+    draw_pose_reference(frame, ref_photos.get(fb.pose_name), bx=px, by=93)
 
     # Rep counter (below thumbnail)
     reps = session.rep_count(fb.pose_name)
@@ -333,7 +400,10 @@ def main():
         print(f"  Hold timer: {config['feedback']['hold_duration_s']}s "
               f"at score ≥ {config['feedback']['min_hold_score']}%")
     print("  Keys      : 1-3 select pose | Q quit")
-    print("  Stand ~1.5 m from the webcam\n")
+    print("  Stand ~1.5 m from the webcam")
+    print("  Loading reference photos…")
+    ref_photos = load_reference_photos(config)
+    print("═══════════════════════════════════════════\n")
 
     prev_time      = time.time()
     frame_ts       = 0
@@ -375,11 +445,14 @@ def main():
         else:
             fb = FeedbackResult(pose_name=pose_name, score=0)
 
-        # ── Session update ────────────────────────────────────────
+        # ── Session update (only when full body visible) ──────────
         angle_vals = {j.name: j.measured for j in fb.joints}
-        progress, completed = session.update(fb.score, pose_name, angle_vals)
-        if completed:
-            just_completed = True
+        if not fb.insufficient_coverage:
+            progress, completed = session.update(fb.score, pose_name, angle_vals)
+            if completed:
+                just_completed = True
+        else:
+            progress, completed = 0.0, False
 
         # ── Draw skeleton ─────────────────────────────────────────
         if lm_2d:
@@ -394,16 +467,27 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 240), 2)
 
         # ── Right panel ───────────────────────────────────────────
-        draw_right_panel(frame, fb, session, config, pose_keys, current_idx)
+        draw_right_panel(frame, fb, session, config, pose_keys, current_idx, ref_photos)
 
-        # ── Hold arc (bottom-centre of camera area) ───────────────
-        panel_w = 315
-        arc_cx  = (w - panel_w) // 2
-        arc_cy  = h - 55
-        arc_col = ((50, 220, 80) if fb.score >= config["feedback"]["score_thresholds"]["green"]
-                   else (30, 180, 255))
-        draw_hold_arc(frame, arc_cx, arc_cy, 38, progress, arc_col, just_completed)
-        just_completed = False   # show flash for only one frame
+        # ── Hold arc (only when full body visible) ────────────────
+        if not fb.insufficient_coverage:
+            panel_w = 315
+            arc_cx  = (w - panel_w) // 2
+            arc_cy  = h - 55
+            arc_col = ((50, 220, 80)
+                       if fb.score >= config["feedback"]["score_thresholds"]["green"]
+                       else (30, 180, 255))
+            draw_hold_arc(frame, arc_cx, arc_cy, 38, progress, arc_col, just_completed)
+        else:
+            # Show "step back" warning on the video frame too
+            warn_x = (w - 315) // 2 - 160
+            draw_rounded_rect(frame, warn_x, h - 52, warn_x + 320, h - 10,
+                               8, (18, 18, 18), 0.75)
+            cv2.putText(frame, "Step back — full body needed",
+                        (warn_x + 10, h - 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (60, 60, 240), 1)
+
+        just_completed = False
 
         # ── Top bar ───────────────────────────────────────────────
         draw_top_bar(frame, pose_keys, current_idx, fps, refs_loaded)

@@ -57,18 +57,14 @@ MIN_VISIBILITY = 0.5
 #  POSE NAME NORMALISATION
 # ─────────────────────────────────────────────────────────────────────
 POSE_NAME_MAP = {
-    # Warrior I — explicit full Yoga-82 names first (longest keys win)
+    # Warrior I — only pure Warrior I data
+    # Warrior II is NOT included: its arm angles are completely different
+    # (horizontal vs overhead) and mixing them corrupts the shoulder references.
     "warrior_i_pose_or_virabhadrasana_i":      "Warrior I",
     "warrior_i_pose":                          "Warrior I",
     "warrior_i":                               "Warrior I",
     "warrior1":                                "Warrior I",
     "virabhadrasana_i":                        "Warrior I",
-    # Warrior II — proxy (leg/hip angles are close to Warrior I)
-    "warrior_ii_pose_or_virabhadrasana_ii":    "Warrior I",
-    "warrior_ii_pose":                         "Warrior I",
-    "warrior_ii":                              "Warrior I",
-    "warrior2":                                "Warrior I",
-    "virabhadrasana_ii":                       "Warrior I",
     # Tree Pose
     "tree_pose_or_vrksasana":                  "Tree Pose",
     "tree_pose_or_vriksasana":                 "Tree Pose",

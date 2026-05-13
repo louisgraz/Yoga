@@ -52,11 +52,12 @@ class JointFeedback:
 @dataclass
 class FeedbackResult:
     """Complete feedback for one frame."""
-    pose_name:   str
-    score:       int                          # 0-100
-    joints:      list[JointFeedback] = field(default_factory=list)
-    worst_joint: Optional[JointFeedback] = None
-    n_visible:   int = 0                      # how many joints were detected
+    pose_name:            str
+    score:                int                          # 0-100
+    joints:               list[JointFeedback] = field(default_factory=list)
+    worst_joint:          Optional[JointFeedback] = None
+    n_visible:            int  = 0    # joints that were detected and scored
+    insufficient_coverage: bool = False  # True when fewer joints than min_joints
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -91,8 +92,16 @@ def _score_color(diff: float, tol: float, thresholds: dict) -> tuple:
 
 
 def _joint_score(diff: float, tol: float) -> float:
-    """Individual score for one joint: 100 at diff=0, 70 at diff=tol, 0 at diff≈3.33*tol."""
-    return float(np.clip(100.0 - (diff / max(tol, 1e-6)) * 30.0, 0.0, 100.0))
+    """
+    Score for one joint (0-100).
+      diff = 0   → 100  (perfect)
+      diff = tol → 50   (at the tolerance boundary)
+      diff = 2*tol → 0  (clearly outside)
+
+    Multiplier 50 (vs old 30): makes the scoring strict enough that being
+    off by one full tolerance = 50%, not 70%.
+    """
+    return float(np.clip(100.0 - (diff / max(tol, 1e-6)) * 50.0, 0.0, 100.0))
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -125,6 +134,7 @@ def compute_feedback(
     """
     vis_min    = config["feedback"].get("landmark_visibility_min", 0.5)
     thresholds = config["feedback"].get("score_thresholds", {"green": 75, "orange": 50})
+    max_tol    = float(config["feedback"].get("max_tolerance_deg", 9999))
     angle_keys = config["poses"][pose_name]["angle_keys"]
     pose_refs  = refs.get(pose_name, {})
 
@@ -165,7 +175,7 @@ def compute_feedback(
             continue
 
         target = float(ref["target"])
-        tol    = float(ref["tolerance"])
+        tol    = min(float(ref["tolerance"]), max_tol)   # cap from config
         diff   = abs(measured - target)
         color  = _score_color(diff, tol, thresholds)
         s      = _joint_score(diff, tol)
@@ -179,6 +189,7 @@ def compute_feedback(
 
     score      = int(np.mean(ind_scores)) if ind_scores else 0
     worst      = max(joints, key=lambda j: j.diff) if joints else None
+    min_joints = config["poses"][pose_name].get("min_joints", 1)
 
     return FeedbackResult(
         pose_name=pose_name,
@@ -186,4 +197,5 @@ def compute_feedback(
         joints=joints,
         worst_joint=worst,
         n_visible=len(joints),
+        insufficient_coverage=(len(joints) < min_joints),
     )
