@@ -22,6 +22,15 @@
     "enabled": true
   },
 
+  "smoothing": {
+    "angle_window_frames": 15,
+    "_comment_angle_window_frames": "augmenter = plus lisse mais plus lent à réagir",
+    "color_debounce_frames": 20,
+    "_comment_color_debounce_frames": "augmenter = couleurs plus stables, transitions plus lentes",
+    "panel_update_interval_s": 0.5, 
+    "_comment_panel_update_interval_s": "augmenter = texte plus lisible, moins de mises à jour"
+  },
+
   "poses": {
     "Warrior I": {
       "reference_image": "Yoga-82/Warrior_I_Pose_or_Virabhadrasana_I_/1_0_68.jpg",
@@ -35,6 +44,7 @@
       "tip": "Front knee at 90 deg — both arms raised straight up"
     },
     "Tree Pose": {
+      "reference_image": "Yoga-82/Tree_Pose_or_Vrksasana_/0_48.jpg",
       "angle_keys": [
         "Right Knee", "Right Hip",
         "Left Elbow", "Right Elbow",

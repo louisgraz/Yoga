@@ -33,6 +33,7 @@ from mediapipe.tasks.python import vision as mp_vision
 
 from analyzer import ANGLE_INDICES, FeedbackResult, compute_feedback
 from session  import Session
+from smoother import FeedbackSmoother
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -382,6 +383,7 @@ def main():
 
     landmarker = init_landmarker(model_path)
     session    = Session(config)
+    smoother   = FeedbackSmoother(config)
 
     wc = config["webcam"]
     cap = cv2.VideoCapture(wc["index"])
@@ -439,26 +441,32 @@ def main():
             lm_2d    = None
             lm_world = None
 
-        # ── Compute feedback ──────────────────────────────────────
+        # ── Compute raw feedback ──────────────────────────────────
         if lm_2d and refs_loaded:
-            fb = compute_feedback(lm_2d, lm_world, pose_name, refs, config)
+            raw_fb = compute_feedback(lm_2d, lm_world, pose_name, refs, config)
         else:
-            fb = FeedbackResult(pose_name=pose_name, score=0)
+            raw_fb = FeedbackResult(pose_name=pose_name, score=0)
 
-        # ── Session update (only when full body visible) ──────────
-        angle_vals = {j.name: j.measured for j in fb.joints}
-        if not fb.insufficient_coverage:
-            progress, completed = session.update(fb.score, pose_name, angle_vals)
+        # ── Smooth: stabilise angles + colours + throttle panel ───
+        # stable_fb  → use for skeleton drawing (every frame, stable colours)
+        # panel_ready → True when text panel should refresh (~every 0.5 s)
+        stable_fb, panel_ready = smoother.update(raw_fb)
+
+        # ── Session update (use stable score — avoids jittery hold timer) ─
+        angle_vals = {j.name: j.measured for j in stable_fb.joints}
+        if not stable_fb.insufficient_coverage:
+            progress, completed = session.update(
+                stable_fb.score, pose_name, angle_vals)
             if completed:
                 just_completed = True
         else:
             progress, completed = 0.0, False
 
-        # ── Draw skeleton ─────────────────────────────────────────
+        # ── Draw skeleton (every frame, uses stable colours) ──────
         if lm_2d:
             joint_colors = {
                 ANGLE_INDICES[j.name][1]: j.color
-                for j in fb.joints
+                for j in stable_fb.joints
             }
             draw_skeleton(frame, lm_2d, joint_colors)
         else:
@@ -466,16 +474,19 @@ def main():
                         (w // 2 - 230, h // 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 240), 2)
 
-        # ── Right panel ───────────────────────────────────────────
-        draw_right_panel(frame, fb, session, config, pose_keys, current_idx, ref_photos)
+        # ── Right panel (throttled — only refreshes every 0.5 s) ──
+        # When not ready, re-draw the last stable panel snapshot.
+        panel_fb = stable_fb if panel_ready else smoother.last_panel_fb
+        draw_right_panel(frame, panel_fb, session, config,
+                         pose_keys, current_idx, ref_photos)
 
         # ── Hold arc (only when full body visible) ────────────────
-        if not fb.insufficient_coverage:
+        if not stable_fb.insufficient_coverage:
             panel_w = 315
             arc_cx  = (w - panel_w) // 2
             arc_cy  = h - 55
             arc_col = ((50, 220, 80)
-                       if fb.score >= config["feedback"]["score_thresholds"]["green"]
+                       if stable_fb.score >= config["feedback"]["score_thresholds"]["green"]
                        else (30, 180, 255))
             draw_hold_arc(frame, arc_cx, arc_cy, 38, progress, arc_col, just_completed)
         else:
@@ -498,10 +509,16 @@ def main():
         if key in (ord("q"), 27):
             break
         elif key == ord("1") and len(pose_keys) >= 1:
+            if current_idx != 0:
+                smoother.reset()
             current_idx = 0
         elif key == ord("2") and len(pose_keys) >= 2:
+            if current_idx != 1:
+                smoother.reset()
             current_idx = 1
         elif key == ord("3") and len(pose_keys) >= 3:
+            if current_idx != 2:
+                smoother.reset()
             current_idx = 2
 
     # ── Shutdown ──────────────────────────────────────────────────
