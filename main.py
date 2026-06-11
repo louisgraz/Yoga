@@ -20,6 +20,8 @@ Controls
   Q / Esc    — quit
 """
 
+import csv
+import glob
 import json
 import os
 import sys
@@ -32,6 +34,7 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 from analyzer import ANGLE_INDICES, FeedbackResult, compute_feedback
+from audio    import AudioFeedback
 from session  import Session
 from smoother import FeedbackSmoother
 
@@ -364,6 +367,242 @@ def draw_top_bar(frame, pose_keys: list, current_idx: int, fps: float,
 
 
 # ─────────────────────────────────────────────────────────────────
+#  SESSION SUMMARY HELPERS
+# ─────────────────────────────────────────────────────────────────
+
+def load_previous_session_stats(log_dir: str, current_path: str | None) -> dict | None:
+    """
+    Read the most recent CSV session file that is NOT the current session.
+    Returns { pose_name: {"reps": int, "avg_score": float} } or None.
+    """
+    pattern = os.path.join(log_dir, "session_*.csv")
+    files   = sorted(glob.glob(pattern))
+
+    # Remove current session from candidates
+    candidates = [f for f in files if f != current_path]
+    if not candidates:
+        return None
+
+    prev_path = candidates[-1]
+    stats: dict[str, dict] = {}
+
+    try:
+        with open(prev_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pose = row.get("pose_name", "").strip()
+                try:
+                    score = float(row.get("score", 0))
+                except ValueError:
+                    continue
+                if pose not in stats:
+                    stats[pose] = {"reps": 0, "score_sum": 0.0}
+                stats[pose]["reps"]      += 1
+                stats[pose]["score_sum"] += score
+    except Exception:
+        return None
+
+    return {
+        pose: {
+            "reps":      v["reps"],
+            "avg_score": v["score_sum"] / v["reps"] if v["reps"] else 0,
+        }
+        for pose, v in stats.items()
+    }
+
+
+def show_session_summary(session: Session, refs: dict, config: dict):
+    """
+    Draw a full-screen summary panel and display it until the user
+    presses any key or closes the window.
+
+    Shows:
+      - Rep count and average score per pose (this session)
+      - Per-joint score breakdown with horizontal bar charts
+      - Comparison with the previous session (if a CSV exists)
+      - Next-session focus tip (worst joint)
+    """
+    from analyzer import ANGLE_INDICES
+
+    reps = session._reps
+    if not reps:
+        return
+
+    # ── Compute per-pose stats ───────────────────────────────────
+    pose_stats: dict[str, dict] = {}
+    for rep in reps:
+        p = rep.pose_name
+        if p not in pose_stats:
+            pose_stats[p] = {"reps": 0, "score_sum": 0.0, "angle_sums": {}, "angle_counts": {}}
+        pose_stats[p]["reps"]      += 1
+        pose_stats[p]["score_sum"] += rep.score
+        for angle_name, measured in rep.angles.items():
+            pose_stats[p]["angle_sums"][angle_name]   = \
+                pose_stats[p]["angle_sums"].get(angle_name, 0.0) + measured
+            pose_stats[p]["angle_counts"][angle_name] = \
+                pose_stats[p]["angle_counts"].get(angle_name, 0) + 1
+
+    max_tol = float(config["feedback"].get("max_tolerance_deg", 25.0))
+
+    def joint_score_from_avg(pose_name, angle_name, avg_measured):
+        ref = refs.get(pose_name, {}).get(angle_name)
+        if ref is None:
+            return None
+        tol  = min(float(ref["tolerance"]), max_tol)
+        diff = abs(avg_measured - float(ref["target"]))
+        return max(0.0, 100.0 - (diff / max(tol, 1e-6)) * 50.0)
+
+    # ── Per-joint scores ─────────────────────────────────────────
+    # Use the pose with the most reps as the primary display pose
+    primary_pose = max(pose_stats, key=lambda p: pose_stats[p]["reps"])
+    ps           = pose_stats[primary_pose]
+    angle_keys   = config["poses"].get(primary_pose, {}).get("angle_keys", [])
+
+    joint_scores: list[tuple[str, float]] = []
+    for aname in angle_keys:
+        count = ps["angle_counts"].get(aname, 0)
+        if count == 0:
+            continue
+        avg_m = ps["angle_sums"][aname] / count
+        sc    = joint_score_from_avg(primary_pose, aname, avg_m)
+        if sc is not None:
+            joint_scores.append((aname, sc))
+
+    joint_scores.sort(key=lambda x: x[1])   # worst first
+
+    # ── Previous session ─────────────────────────────────────────
+    log_dir      = config["session"].get("log_dir", "sessions")
+    prev_stats   = load_previous_session_stats(log_dir, session.summary()["session_file"])
+
+    # ── Draw ─────────────────────────────────────────────────────
+    W, H  = 900, 640
+    frame = np.full((H, W, 3), 20, dtype=np.uint8)    # dark background
+
+    TITLE_COL  = (255, 255, 255)
+    DIM_COL    = (140, 140, 140)
+    GREEN      = (50,  220, 80)
+    ORANGE     = (30,  180, 255)
+    RED        = (60,  60,  240)
+    ACCENT     = (200, 160, 60)
+
+    def txt(text, x, y, scale=0.55, color=TITLE_COL, thickness=1):
+        cv2.putText(frame, text, (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness,
+                    cv2.LINE_AA)
+
+    def hline(y, x1=30, x2=W-30, col=(55, 55, 55)):
+        cv2.line(frame, (x1, y), (x2, y), col, 1)
+
+    def bar(x, y, pct, bar_w=200, bar_h=12, col=GREEN):
+        cv2.rectangle(frame, (x, y), (x + bar_w, y + bar_h), (50, 50, 50), -1)
+        fill = int(bar_w * max(0.0, min(1.0, pct / 100.0)))
+        if fill > 0:
+            cv2.rectangle(frame, (x, y), (x + fill, y + bar_h), col, -1)
+
+    def score_col(s):
+        return GREEN if s >= 75 else ORANGE if s >= 50 else RED
+
+    # Title
+    cv2.putText(frame, "Session Summary",
+                (30, 45), cv2.FONT_HERSHEY_DUPLEX, 1.1, TITLE_COL, 2, cv2.LINE_AA)
+    hline(60)
+
+    y = 90
+
+    # ── Per-pose block ───────────────────────────────────────────
+    txt("This session", 30, y, 0.5, DIM_COL)
+    y += 26
+
+    for pose_name, ps_data in pose_stats.items():
+        n_reps    = ps_data["reps"]
+        avg_score = ps_data["score_sum"] / n_reps if n_reps else 0
+        sc        = score_col(avg_score)
+
+        txt(pose_name, 30, y, 0.58, TITLE_COL, 1)
+        txt(f"{n_reps} rep{'s' if n_reps != 1 else ''}",
+            280, y, 0.52, DIM_COL)
+        txt(f"avg {avg_score:.0f}%", 380, y, 0.58, sc, 1)
+        bar(490, y - 12, avg_score, bar_w=220, col=sc)
+
+        # vs. last session
+        if prev_stats and pose_name in prev_stats:
+            prev_avg = prev_stats[pose_name]["avg_score"]
+            delta    = avg_score - prev_avg
+            arrow    = "↑" if delta >= 0 else "↓"
+            dcol     = GREEN if delta >= 0 else RED
+            txt(f"vs last: {prev_avg:.0f}%  {arrow}{abs(delta):.0f}%",
+                730, y, 0.46, dcol)
+
+        y += 32
+
+    hline(y + 4)
+    y += 24
+
+    # ── Joint breakdown ──────────────────────────────────────────
+    if joint_scores:
+        txt(f"Joint breakdown — {primary_pose}", 30, y, 0.5, DIM_COL)
+        y += 28
+
+        bar_x     = 240
+        worst_name = joint_scores[0][0]
+
+        for aname, jscore in joint_scores:
+            col  = score_col(jscore)
+            flag = "  ← work on this" if aname == worst_name else ""
+            txt(aname, 30, y, 0.46, TITLE_COL)
+            txt(f"{jscore:.0f}%", bar_x - 50, y, 0.48, col)
+            bar(bar_x, y - 11, jscore, bar_w=300, bar_h=11, col=col)
+            if flag:
+                txt(flag, bar_x + 310, y, 0.44, ORANGE)
+            y += 30
+
+        hline(y + 4)
+        y += 24
+
+    # ── Next-session tip ─────────────────────────────────────────
+    if joint_scores:
+        worst_name, worst_sc = joint_scores[0]
+        ref = refs.get(primary_pose, {}).get(worst_name)
+        if ref:
+            txt("Next session focus:", 30, y, 0.52, DIM_COL)
+            tip = (f"{worst_name}  (avg {worst_sc:.0f}%)  "
+                   f"— target: {ref['target']:.0f}° ± {min(ref['tolerance'], max_tol):.0f}°")
+            txt(tip, 210, y, 0.52, ACCENT, 1)
+        y += 30
+
+    # ── Progress across sessions ─────────────────────────────────
+    if prev_stats:
+        hline(y + 4)
+        y += 24
+        txt("Progress", 30, y, 0.5, DIM_COL)
+        y += 26
+        for pose_name in pose_stats:
+            curr_avg = pose_stats[pose_name]["score_sum"] / pose_stats[pose_name]["reps"]
+            if pose_name in prev_stats:
+                prev_avg = prev_stats[pose_name]["avg_score"]
+                delta    = curr_avg - prev_avg
+                col      = GREEN if delta >= 0 else RED
+                arrow    = "↑" if delta >= 0 else "↓"
+                txt(f"{pose_name}: {prev_avg:.0f}%  →  {curr_avg:.0f}%  "
+                    f"({arrow} {abs(delta):.0f}%)",
+                    50, y, 0.52, col, 1)
+                y += 28
+
+    # Footer
+    hline(H - 45)
+    txt("Press any key to close",
+        W // 2 - 110, H - 18, 0.50, DIM_COL)
+
+    # ── Show ─────────────────────────────────────────────────────
+    cv2.imshow("Session Summary", frame)
+    cv2.waitKey(0)
+    try:
+        cv2.destroyWindow("Session Summary")
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────
 #  MAIN LOOP
 # ─────────────────────────────────────────────────────────────────
 def main():
@@ -384,6 +623,7 @@ def main():
     landmarker = init_landmarker(model_path)
     session    = Session(config)
     smoother   = FeedbackSmoother(config)
+    audio      = AudioFeedback(config)
 
     wc = config["webcam"]
     cap = cv2.VideoCapture(wc["index"])
@@ -458,9 +698,13 @@ def main():
             progress, completed = session.update(
                 stable_fb.score, pose_name, angle_vals)
             if completed:
+                audio.on_rep_completed()
                 just_completed = True
         else:
             progress, completed = 0.0, False
+
+        # ── Audio score alert (fires when score stays low for > 3 s) ──
+        audio.update_score(stable_fb.score, stable_fb.insufficient_coverage)
 
         # ── Draw skeleton (every frame, uses stable colours) ──────
         if lm_2d:
@@ -511,14 +755,17 @@ def main():
         elif key == ord("1") and len(pose_keys) >= 1:
             if current_idx != 0:
                 smoother.reset()
+                audio.reset()
             current_idx = 0
         elif key == ord("2") and len(pose_keys) >= 2:
             if current_idx != 1:
                 smoother.reset()
+                audio.reset()
             current_idx = 1
         elif key == ord("3") and len(pose_keys) >= 3:
             if current_idx != 2:
                 smoother.reset()
+                audio.reset()
             current_idx = 2
 
     # ── Shutdown ──────────────────────────────────────────────────
@@ -529,12 +776,17 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
+    # ── Post-session summary ──────────────────────────────────────
     summary = session.summary()
     print(f"\nSession ended.")
     print(f"  Total reps : {summary['total_reps']}")
     print(f"  By pose    : {summary['by_pose']}")
     if summary["session_file"]:
         print(f"  Log saved  : {summary['session_file']}")
+
+    if summary["total_reps"] > 0:
+        print("\nShowing session summary — press any key to close.")
+        show_session_summary(session, refs, config)
 
 
 if __name__ == "__main__":

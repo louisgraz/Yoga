@@ -17,6 +17,16 @@
     "max_tolerance_deg": 25.0
   },
 
+  "audio": {
+    "enabled": true,
+    "rep_success_freq": 880,
+    "rep_success_duration_ms": 150,
+    "low_score_alert_freq": 330,
+    "low_score_alert_duration_ms": 200,
+    "low_score_alert_delay_s": 3,
+    "low_score_alert_cooldown_s": 8
+  },
+
   "session": {
     "log_dir": "sessions",
     "enabled": true
